@@ -1,0 +1,509 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>DON'T LOOK BACK</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#030605;color:#ddd;font-family:monospace;overflow:hidden}
+canvas{width:100vw;height:100dvh;display:block;image-rendering:pixelated}
+#hud{position:fixed;top:13px;left:14px;right:14px;display:flex;justify-content:space-between;font-size:11px;color:#c4d0c5;text-shadow:0 2px 5px black;pointer-events:none}
+#batteryBox{position:fixed;top:35px;left:14px;width:100px;height:5px;background:#333}
+#battery{height:100%;width:100%;background:#b6d5a4}
+#message{position:fixed;top:20%;width:100%;text-align:center;color:#d4dfd2;font-size:14px;text-shadow:0 2px 8px black;pointer-events:none;padding:0 20px}
+#controls{position:fixed;bottom:24px;left:0;right:0;display:flex;justify-content:space-between;align-items:end;padding:0 17px}
+.pad{display:grid;grid-template-columns:46px 46px 46px;grid-template-rows:46px 46px;gap:5px}
+button{background:#101b18d9;color:#dce5dc;border:1px solid #89958b66;border-radius:5px;font-family:monospace;touch-action:none}
+.pad button{font-size:19px}
+#turn{display:flex;gap:7px}
+#turn button{width:54px;height:54px;font-size:20px}
+#actions{position:fixed;right:17px;bottom:145px;display:flex;flex-direction:column;gap:8px}
+#actions button{padding:10px;font-size:10px}
+#hint{position:fixed;bottom:5px;width:100%;text-align:center;color:#78877b;font-size:9px;pointer-events:none}
+#start{position:fixed;inset:0;background:#020403f2;display:flex;align-items:center;justify-content:center;text-align:center;padding:25px}
+.panel{max-width:410px}
+h1{font-size:34px;letter-spacing:5px;color:#d7dfd5;text-shadow:0 0 18px #829b83}
+p{font-size:12px;line-height:1.8;color:#9eaaa0}
+#start button{padding:15px 25px;margin-top:15px;background:#26382c;font-size:13px}
+.small{font-size:9px;color:#69766d}
+</style>
+</head>
+<body>
+
+<canvas id="game"></canvas>
+
+<div id="hud">
+ <span id="parts">SIGNAL PARTS 0/3</span>
+ <span id="status">SIGNAL: LOST</span>
+</div>
+<div id="batteryBox"><div id="battery"></div></div>
+<div id="message"></div>
+
+<div id="actions">
+ <button id="flash">FLASHLIGHT: ON</button>
+ <button id="read">INSPECT NOTE</button>
+</div>
+
+<div id="controls">
+ <div class="pad">
+  <button style="grid-column:2" data-key="w">▲</button>
+  <button style="grid-column:1;grid-row:2" data-key="a">◀</button>
+  <button style="grid-column:2;grid-row:2" data-key="s">▼</button>
+  <button style="grid-column:3;grid-row:2" data-key="d">▶</button>
+ </div>
+ <div id="turn">
+  <button data-key="left">↶</button>
+  <button data-key="right">↷</button>
+ </div>
+</div>
+<div id="hint">WASD TO MOVE · ARROWS TO TURN · F TOGGLE FLASHLIGHT</div>
+
+<div id="start">
+ <div class="panel">
+  <div class="small">A SMALL INDEPENDENT HORROR EXPERIENCE</div>
+  <h1>DON'T LOOK BACK</h1>
+  <p>2:17 AM<br>LOCATION UNKNOWN<br>PHONE SIGNAL: NONE</p>
+  <p>You woke up somewhere in the forest.<br>
+  There are lights between the trees.<br>
+  You are not alone.</p>
+  <p>Find three signal parts. Look for notes.<br>
+  Find the exit. Do not let it catch you.</p>
+  <button id="begin">START GAME</button>
+  <p class="small">HEADPHONES RECOMMENDED</p>
+ </div>
+</div>
+
+<script>
+const canvas=document.getElementById("game");
+const ctx=canvas.getContext("2d");
+const W=320,H=200;
+canvas.width=W;canvas.height=H;
+
+const map=[
+"################",
+"#..............#",
+"#..##..........#",
+"#........##....#",
+"#..............#",
+"#....##........#",
+"#..............#",
+"#..........##..#",
+"#..............#",
+"#..##..........#",
+"#..............#",
+"#......##......#",
+"#..............#",
+"#...........#..#",
+"#..............#",
+"################"
+];
+
+let player={x:2.5,y:2.5,a:0};
+let monster={x:12.5,y:3.5};
+let parts=[
+{x:6.5,y:3.5,got:false},
+{x:11.5,y:8.5,got:false},
+{x:4.5,y:12.5,got:false}
+];
+let notes=[
+{x:2.5,y:8.5,got:false,text:"NOTE 01: I heard someone walking behind me. When I stopped, the footsteps stopped too."},
+{x:10.5,y:4.5,got:false,text:"NOTE 02: It doesn't follow the light. It follows the sound."}
+];
+let exit={x:13.5,y:13.5};
+
+let keys={};
+let started=false,dead=false,won=false;
+let flashlight=true,battery=100;
+let collected=0,notesFound=0;
+let messageTimer=0,elapsed=0;
+let audio,noiseGain,windFilter,droneGain;
+let lastStep=0,branchTimer=0,breathTimer=0;
+let lastTime=0;
+
+const FOV=Math.PI/2.8;
+const depth=new Array(W);
+
+function openTile(x,y){
+ const mx=Math.floor(x),my=Math.floor(y);
+ return !!map[my] && map[my][mx]===".";
+}
+function distance(x,y){return Math.hypot(x-player.x,y-player.y)}
+function norm(a){
+ while(a>Math.PI)a-=Math.PI*2;
+ while(a< -Math.PI)a+=Math.PI*2;
+ return a;
+}
+function say(text,time=2){
+ document.getElementById("message").textContent=text;
+ messageTimer=time;
+}
+function random(min,max){return min+Math.random()*(max-min)}
+
+// PROCEDURAL SOUND DESIGN - NO EXTERNAL AUDIO FILES.
+function makeNoise(){
+ const buffer=audio.createBuffer(1,audio.sampleRate*3,audio.sampleRate);
+ const data=buffer.getChannelData(0);
+ for(let i=0;i<data.length;i++)data[i]=Math.random()*2-1;
+ const source=audio.createBufferSource();
+ source.buffer=buffer;
+ source.loop=true;
+ const filter=audio.createBiquadFilter();
+ filter.type="lowpass";
+ filter.frequency.value=500;
+ const gain=audio.createGain();
+ gain.gain.value=.035;
+ source.connect(filter);
+ filter.connect(gain);
+ gain.connect(audio.destination);
+ source.start();
+ return {source,filter,gain};
+}
+function tone(freq,duration,volume=.05,type="sine"){
+ if(!audio)return;
+ const o=audio.createOscillator();
+ const g=audio.createGain();
+ o.type=type;
+ o.frequency.setValueAtTime(freq,audio.currentTime);
+ g.gain.setValueAtTime(volume,audio.currentTime);
+ g.gain.exponentialRampToValueAtTime(.001,audio.currentTime+duration);
+ o.connect(g);g.connect(audio.destination);
+ o.start();o.stop(audio.currentTime+duration);
+}
+function hiss(duration=.25,volume=.04){
+ if(!audio)return;
+ const buffer=audio.createBuffer(1,audio.sampleRate*duration,audio.sampleRate);
+ const data=buffer.getChannelData(0);
+ for(let i=0;i<data.length;i++)data[i]=Math.random()*2-1;
+ const source=audio.createBufferSource();
+ const filter=audio.createBiquadFilter();
+ const gain=audio.createGain();
+ source.buffer=buffer;
+ filter.type="lowpass";
+ filter.frequency.value=900;
+ gain.gain.value=volume;
+ source.connect(filter);filter.connect(gain);gain.connect(audio.destination);
+ source.start();
+}
+function footstep(){
+ tone(65,.09,.045,"triangle");
+ hiss(.07,.025);
+}
+function branchSnap(){
+ tone(random(90,150),.09,.055,"square");
+ hiss(.16,.045);
+}
+function breathing(){
+ tone(85,.8,.018,"sawtooth");
+ hiss(.65,.025);
+}
+
+function cast(angle){
+ let dx=Math.cos(angle),dy=Math.sin(angle);
+ let mx=Math.floor(player.x),my=Math.floor(player.y);
+ let deltaX=Math.abs(1/dx),deltaY=Math.abs(1/dy);
+ let sx=dx<0?-1:1,sy=dy<0?-1:1;
+ let sideX=dx<0?(player.x-mx)*deltaX:(mx+1-player.x)*deltaX;
+ let sideY=dy<0?(player.y-my)*deltaY:(my+1-player.y)*deltaY;
+ let side=0;
+ for(let i=0;i<50;i++){
+  if(sideX<sideY){sideX+=deltaX;mx+=sx;side=0;}
+  else{sideY+=deltaY;my+=sy;side=1;}
+  if(!map[my]||map[my][mx]==="#")break;
+ }
+ let d=side===0?sideX-deltaX:sideY-deltaY;
+ return {d:Math.max(.01,d),side};
+}
+
+function move(dx,dy){
+ if(openTile(player.x+dx,player.y))player.x+=dx;
+ if(openTile(player.x,player.y+dy))player.y+=dy;
+}
+
+function drawWorld(){
+ ctx.fillStyle="#111914";
+ ctx.fillRect(0,0,W,H/2);
+ ctx.fillStyle="#171912";
+ ctx.fillRect(0,H/2,W,H/2);
+
+ // Foggy sky
+ let sky=ctx.createLinearGradient(0,0,0,110);
+ sky.addColorStop(0,"#050b09");
+ sky.addColorStop(1,"#26332b");
+ ctx.fillStyle=sky;
+ ctx.fillRect(0,0,W,110);
+
+ // Ground
+ let ground=ctx.createLinearGradient(0,100,0,H);
+ ground.addColorStop(0,"#25271d");
+ ground.addColorStop(1,"#080b08");
+ ctx.fillStyle=ground;
+ ctx.fillRect(0,100,W,100);
+
+ for(let x=0;x<W;x++){
+  let angle=player.a+(x/W-.5)*FOV;
+  let ray=cast(angle);
+  let d=ray.d*Math.cos(angle-player.a);
+  depth[x]=d;
+  let height=Math.min(H,H/d);
+  let y=H/2-height/2;
+  let light=Math.max(0,1-d/8);
+  let lamp=flashlight?Math.max(0,1-Math.abs(x-W/2)/110):.12;
+  let shade=Math.floor(5+light*lamp*38-(ray.side?7:0));
+  ctx.fillStyle=`rgb(${shade},${shade+8},${shade+3})`;
+  ctx.fillRect(x,y,1,height);
+ }
+
+ // Flashlight pool
+ if(flashlight){
+  let glow=ctx.createRadialGradient(W/2,H/2,5,W/2,H/2,135);
+  glow.addColorStop(0,"#d7e5c50a");
+  glow.addColorStop(.5,"#c7e0bd0b");
+  glow.addColorStop(1,"#000000d9");
+  ctx.fillStyle=glow;ctx.fillRect(0,0,W,H);
+ }else{
+  ctx.fillStyle="#00000088";ctx.fillRect(0,0,W,H);
+ }
+
+ drawSprites();
+ drawGrain();
+}
+
+function drawSprites(){
+ let sprites=[
+  ...parts.filter(p=>!p.got).map(p=>({...p,type:"part"})),
+  ...notes.filter(n=>!n.got).map(n=>({...n,type:"note"})),
+  {...exit,type:"exit"},
+  {...monster,type:"monster"}
+ ].map(s=>({...s,d:distance(s.x,s.y)})).sort((a,b)=>b.d-a.d);
+
+ for(const s of sprites){
+  let angle=norm(Math.atan2(s.y-player.y,s.x-player.x)-player.a);
+  if(Math.abs(angle)>FOV/2+.2||s.d<.15)continue;
+  let sx=W/2+(angle/FOV)*W;
+  let col=Math.max(0,Math.min(W-1,Math.floor(sx)));
+  if(depth[col]<s.d-.2)continue;
+  let size=Math.min(160,H/s.d);
+
+  if(s.type==="part"){
+   ctx.fillStyle="#a8d7a0";
+   ctx.shadowColor="#b6ff9e";ctx.shadowBlur=12;
+   ctx.fillRect(sx-size*.09,H/2-size*.17,size*.18,size*.34);
+   ctx.shadowBlur=0;
+  }
+  if(s.type==="note"){
+   ctx.fillStyle="#d0c7a1";
+   ctx.fillRect(sx-size*.13,H/2-size*.14,size*.26,size*.28);
+  }
+  if(s.type==="exit"){
+   ctx.fillStyle=col>0?"#80947c":"#80947c";
+   ctx.globalAlpha=.55;
+   ctx.fillRect(sx-size*.22,H/2-size*.7,size*.44,size*1.4);
+   ctx.globalAlpha=1;
+  }
+  if(s.type==="monster"){
+   ctx.fillStyle="#020302";
+   ctx.shadowColor="#000";ctx.shadowBlur=12;
+   ctx.fillRect(sx-size*.19,H/2-size*.8,size*.38,size*1.65);
+   ctx.fillRect(sx-size*.29,H/2-size*.85,size*.58,size*.13);
+   ctx.fillRect(sx-size*.23,H/2+size*.5,size*.11,size*.4);
+   ctx.fillRect(sx+size*.12,H/2+size*.5,size*.11,size*.4);
+   ctx.fillStyle="#c9d5c4";
+   ctx.fillRect(sx-size*.10,H/2-size*.63,size*.045,size*.035);
+   ctx.fillRect(sx+size*.055,H/2-size*.63,size*.045,size*.035);
+   ctx.shadowBlur=0;
+  }
+ }
+}
+
+function drawGrain(){
+ // Lightweight film grain and scanlines
+ for(let i=0;i<120;i++){
+  ctx.fillStyle=Math.random()>.5?"#ffffff0c":"#00000012";
+  ctx.fillRect(Math.random()*W,Math.random()*H,1,1);
+ }
+ ctx.fillStyle="#00000018";
+ for(let y=0;y<H;y+=3)ctx.fillRect(0,y,W,1);
+}
+
+function collect(){
+ for(const p of parts){
+  if(!p.got&&distance(p.x,p.y)<.65){
+   p.got=true;collected++;
+   document.getElementById("parts").textContent="SIGNAL PARTS "+collected+"/3";
+   say("SIGNAL PART RECOVERED",2);
+   tone(620,.2,.07);
+   if(collected===3)say("THE EXIT. FIND THE EXIT.",3);
+  }
+ }
+ for(const n of notes){
+  if(!n.got&&distance(n.x,n.y)<.65){
+   n.got=true;notesFound++;
+   say("A NOTE. PRESS INSPECT NOTE.",3);
+   tone(300,.15,.04);
+  }
+ }
+}
+
+function inspect(){
+ const n=notes.find(n=>!n.got&&distance(n.x,n.y)<1.3);
+ if(n){
+  n.got=true;notesFound++;
+  document.getElementById("read").textContent="NOTE READ";
+  say(n.text,6);
+  tone(250,.25,.04);
+ }else{
+  say("THERE IS NOTHING HERE.",2);
+ }
+}
+
+function update(dt){
+ if(!started||dead||won)return;
+ elapsed+=dt;
+ if(messageTimer>0){
+  messageTimer-=dt;
+  if(messageTimer<=0)document.getElementById("message").textContent="";
+ }
+
+ let moving=false;
+ let speed=2.1*dt;
+ if(keys.w||keys.ArrowUp){move(Math.cos(player.a)*speed,Math.sin(player.a)*speed);moving=true;}
+ if(keys.s||keys.ArrowDown){move(-Math.cos(player.a)*speed,-Math.sin(player.a)*speed);moving=true;}
+ if(keys.a){move(Math.cos(player.a-Math.PI/2)*speed,Math.sin(player.a-Math.PI/2)*speed);moving=true;}
+ if(keys.d){move(Math.cos(player.a+Math.PI/2)*speed,Math.sin(player.a+Math.PI/2)*speed);moving=true;}
+ if(keys.left||keys.ArrowLeft)player.a-=1.8*dt;
+ if(keys.right||keys.ArrowRight)player.a+=1.8*dt;
+
+ if(moving&&elapsed-lastStep>.48){
+  footstep();lastStep=elapsed;
+ }
+ if(moving&&audio&&noiseGain){
+  noiseGain.gain.setTargetAtTime(.055,audio.currentTime,.2);
+ }else if(audio&&noiseGain){
+  noiseGain.gain.setTargetAtTime(.025,audio.currentTime,.3);
+ }
+
+ collect();
+
+ // Flashlight battery
+ if(flashlight){
+  battery-=.75*dt;
+  if(battery<=0){
+   battery=0;flashlight=false;
+   say("THE FLASHLIGHT DIED.",3);
+   tone(75,.5,.07);
+  }
+ }
+ document.getElementById("battery").style.width=battery+"%";
+ document.getElementById("flash").textContent="FLASHLIGHT: "+(flashlight?"ON":"OFF");
+
+ // Creature follows the player
+ let md=distance(monster.x,monster.y);
+ let angle=Math.atan2(player.y-monster.y,player.x-monster.x);
+ let speedMonster=collected>=2?.65:collected>=1?.42:.22;
+ let step=speedMonster*dt;
+ if(md>1){
+  let nx=monster.x+Math.cos(angle)*step;
+  let ny=monster.y+Math.sin(angle)*step;
+  if(openTile(nx,monster.y))monster.x=nx;
+  if(openTile(monster.x,ny))monster.y=ny;
+ }
+
+ // Environmental sound events
+ branchTimer-=dt;
+ if(branchTimer<=0){
+  branchTimer=random(9,19);
+  if(Math.random()<.7)branchSnap();
+ }
+ breathTimer-=dt;
+ if(md<7&&breathTimer<=0){
+  breathTimer=random(4,8);
+  breathing();
+  if(md<4)say("...DID YOU HEAR THAT?",2);
+ }
+ if(md<3&&Math.random()<.01){
+  say("IT IS RIGHT BEHIND YOU.",2);
+ }
+
+ document.getElementById("status").textContent=
+  md<3?"SIGNAL: DISTORTED":md<6?"SIGNAL: WEAK":"SIGNAL: LOST";
+
+ if(md<.65){
+  dead=true;
+  say("IT FOUND YOU.",5);
+  tone(45,1,.13,"sawtooth");
+  setTimeout(()=>endScreen("YOU WERE FOUND","The forest kept you."),900);
+ }
+
+ if(collected===3&&distance(exit.x,exit.y)<.9){
+  won=true;
+  if(notesFound===2){
+   endScreen("THE SECRET ENDING","You found the notes. You know what was following you.");
+  }else{
+   endScreen("YOU ESCAPED","You made it out. But you left something behind.");
+  }
+ }
+}
+
+function endScreen(title,sub){
+ document.getElementById("start").style.display="flex";
+ document.querySelector(".panel").innerHTML=
+ `<div class="small">DON'T LOOK BACK</div><h1>${title}</h1>
+ <p>${sub}</p><p>SIGNAL PARTS: ${collected}/3<br>NOTES FOUND: ${notesFound}/2</p>
+ <button onclick="location.reload()">PLAY AGAIN</button>`;
+}
+
+function loop(t){
+ let dt=Math.min((t-lastTime)/1000,.05)||0;
+ lastTime=t;
+ update(dt);
+ drawWorld();
+ requestAnimationFrame(loop);
+}
+
+document.addEventListener("keydown",e=>{
+ keys[e.key.toLowerCase()]=true;
+ keys[e.key]=true;
+ if(e.key.toLowerCase()==="f")toggleFlash();
+});
+document.addEventListener("keyup",e=>{
+ keys[e.key.toLowerCase()]=false;
+ keys[e.key]=false;
+});
+document.querySelectorAll("[data-key]").forEach(btn=>{
+ let k=btn.dataset.key;
+ btn.addEventListener("pointerdown",e=>{e.preventDefault();keys[k]=true;});
+ ["pointerup","pointerleave","pointercancel"].forEach(ev=>
+  btn.addEventListener(ev,()=>keys[k]=false));
+});
+
+function toggleFlash(){
+ if(battery<=0){say("BATTERY EMPTY.",2);return;}
+ flashlight=!flashlight;
+ tone(flashlight?450:120,.12,.04);
+}
+document.getElementById("flash").onclick=toggleFlash;
+document.getElementById("read").onclick=inspect;
+
+document.getElementById("begin").onclick=()=>{
+ audio=new (window.AudioContext||window.webkitAudioContext)();
+ audio.resume();
+ let wind=makeNoise();
+ noiseGain=wind.gain;
+ windFilter=wind.filter;
+ let drone=audio.createOscillator();
+ drone.type="sine";drone.frequency.value=43;
+ droneGain=audio.createGain();droneGain.gain.value=.018;
+ drone.connect(droneGain);droneGain.connect(audio.destination);
+ drone.start();
+ started=true;
+ document.getElementById("start").style.display="none";
+ say("FIND THE SIGNAL PARTS.",3);
+ tone(85,.6,.06);
+};
+
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
